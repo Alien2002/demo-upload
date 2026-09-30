@@ -1,23 +1,20 @@
 // src-tauri/src/query.rs
 //
-// Query engine: paging and table metadata for the grid.
-// The grid asks for small row windows; DuckDB answers in milliseconds
-// no matter how big the table is.
+// Table catalog helpers: list tables and read a table's columns and row count.
+// Row fetching lives in query_engine.rs.
 
 use duckdb::Connection;
 use serde::Serialize;
 
-use crate::import::quote_ident;
+use crate::names::quote_ident;
 
-const MAX_PAGE: u64 = 5_000;
-
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ColumnInfo {
     pub name: String,
     pub sql_type: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct TableMeta {
     pub table: String,
     pub row_count: u64,
@@ -28,16 +25,16 @@ pub fn list_tables(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT table_name FROM information_schema.tables
-             WHERE table_schema = 'main' ORDER BY table_name",
+             WHERE table_schema = 'main' ORDER BY lower(table_name)",
         )
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
-pub fn table_meta(conn: &Connection, table: &str) -> Result<TableMeta, String> {
+/// Columns in table order. Errors if the table doesn't exist, which makes
+/// this the validation step before any table name is used in SQL.
+pub fn columns(conn: &Connection, table: &str) -> Result<Vec<ColumnInfo>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT column_name, data_type FROM information_schema.columns
@@ -45,56 +42,26 @@ pub fn table_meta(conn: &Connection, table: &str) -> Result<TableMeta, String> {
              ORDER BY ordinal_position",
         )
         .map_err(|e| e.to_string())?;
-    let columns: Vec<ColumnInfo> = stmt
-        .query_map([table], |r| {
-            Ok(ColumnInfo { name: r.get(0)?, sql_type: r.get(1)? })
-        })
+    let cols: Vec<ColumnInfo> = stmt
+        .query_map([table], |r| Ok(ColumnInfo { name: r.get(0)?, sql_type: r.get(1)? }))
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-
-    // This also acts as validation: unknown tables have no columns.
-    if columns.is_empty() {
+    if cols.is_empty() {
         return Err(format!("Table '{table}' not found"));
     }
-
-    let row_count: i64 = conn
-        .query_row(&format!("SELECT count(*) FROM {}", quote_ident(table)), [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-
-    Ok(TableMeta { table: table.to_string(), row_count: row_count as u64, columns })
+    Ok(cols)
 }
 
-/// Rows [offset, offset + limit) as display strings (NULL → None).
-pub fn fetch_rows(
-    conn: &Connection,
-    table: &str,
-    offset: u64,
-    limit: u64,
-) -> Result<Vec<Vec<Option<String>>>, String> {
-    let meta = table_meta(conn, table)?; // validates the table name
-    let limit = limit.min(MAX_PAGE);
-
-    let select_list: Vec<String> = meta
-        .columns
-        .iter()
-        .map(|c| format!("CAST({} AS VARCHAR)", quote_ident(&c.name)))
-        .collect();
-
-    // rowid is contiguous for imported tables, so a range filter on it is
-    // much cheaper than OFFSET (which scans and discards rows).
-    let sql = format!(
-        "SELECT {} FROM {} WHERE rowid >= ? AND rowid < ? ORDER BY rowid",
-        select_list.join(", "),
-        quote_ident(table)
-    );
-
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let ncols = meta.columns.len();
-    let rows = stmt
-        .query_map([offset as i64, (offset + limit) as i64], |r| {
-            (0..ncols).map(|i| r.get::<_, Option<String>>(i)).collect()
-        })
+pub fn row_count(conn: &Connection, table: &str) -> Result<u64, String> {
+    let n: i64 = conn
+        .query_row(&format!("SELECT count(*) FROM {}", quote_ident(table)), [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    Ok(n as u64)
+}
+
+pub fn table_meta(conn: &Connection, table: &str) -> Result<TableMeta, String> {
+    let columns = columns(conn, table)?;
+    let row_count = row_count(conn, table)?;
+    Ok(TableMeta { table: table.to_string(), row_count, columns })
 }

@@ -1,33 +1,67 @@
 // src-tauri/src/lib.rs
-// Replaces the template's lib.rs (the `greet` example is no longer needed).
+//
+// App wiring: modules, managed state, command registration, shutdown.
 
 mod commands;
+mod connections;
+mod folder;
 mod import;
+mod names;
 mod query;
-mod state;
+mod query_engine;
+mod workspace;
 
-use tauri::Manager;
+pub use connections::ConnectionManager;
+pub use query_engine::{CountCache, QueryModel, QueryResult};
+pub use workspace::{Workspace, WorkspaceStore};
+
+use tauri::{Manager, RunEvent};
+
+/// Workspaces live in ~/workspaces (C:\Users\<you>\workspaces on Windows).
+fn workspaces_root(app: &tauri::App) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    Ok(app.path().home_dir()?.join("workspaces"))
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // One workspace database in the app's data folder
-            // (on Windows: %APPDATA%\<your.app.identifier>\workspace.duckdb)
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
-            let db = state::Db::open(&dir.join("workspace.duckdb"))?;
-            app.manage(db);
+            let store = WorkspaceStore::new(workspaces_root(app)?)?;
+            app.manage(store);
+            app.manage(ConnectionManager::new());
+            app.manage(CountCache::default());
+            app.manage(commands::ImportControl::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::import_file,
+            // workspaces
+            commands::create_workspace,
+            commands::list_workspaces,
+            commands::get_workspace,
+            commands::delete_workspace,
+            // folders
+            commands::create_folder,
+            commands::list_folders,
+            commands::get_folder,
+            commands::delete_folder,
+            // tables & queries
             commands::list_tables,
             commands::table_meta,
-            commands::fetch_rows,
+            commands::execute_query,
+            // import
+            commands::list_sheets,
+            commands::import_file_to_folder,
+            commands::cancel_import,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            // Flush and close every open DuckDB file.
+            handle.state::<ConnectionManager>().close_all();
+        }
+    });
 }

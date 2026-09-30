@@ -18,7 +18,8 @@
     "marked": "^16.4.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-responsive-carousel": "^3.2.23"
+    "react-responsive-carousel": "^3.2.23",
+    "zustand": "^4.5.7"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
