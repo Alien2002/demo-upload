@@ -53,6 +53,49 @@ export type QueryModel = {
 export type QueryResult = { rows: Row[]; total_count: number };
 
 export type ImportProgress = { done: number; total: number };
+
+// ---- staged import (review columns before the table is created)
+
+export type ColumnKind = "text" | "integer" | "number" | "currency" | "date" | "datetime" | "boolean";
+
+export type StagedColumn = {
+  source: string;
+  suggested_name: string;
+  suggested_kind: ColumnKind;
+  suggested_format: string | null;
+  samples: string[];
+  blank_count: number;
+  /** Excel error cells (#N/A, #DIV/0!) staged as blank */
+  excel_error_count: number;
+};
+
+export type StagedImport = {
+  staging_id: string;
+  file_path: string;
+  sheet: string | null;
+  row_count: number;
+  suggested_table: string;
+  columns: StagedColumn[];
+};
+
+export type ColumnSpec = {
+  source: string;
+  name: string;
+  kind: ColumnKind;
+  format: string | null;
+  include: boolean;
+};
+
+export type ColumnCheck = {
+  invalid_count: number;
+  examples: string[];
+  /** [original, converted] for the first few values */
+  preview: [string, string | null][];
+  /** Currency: values with more than 2 decimals that will be rounded */
+  rounded_count: number;
+  /** Number types: values like "00123" that will lose their leading zeros */
+  leading_zero_count: number;
+};
 export type ImportComplete = { workspace_id: string; folder_id: string; table: string };
 
 export const MAX_PAGE = 5000;
@@ -94,6 +137,28 @@ export const api = {
         sheet: sheet ?? null,
       }),
 
+    /** Staged import, step 1: read the file into a hidden staging table. */
+    stage: (workspace_id: string, folder_id: string, file_path: string, sheet?: string) =>
+      invoke<StagedImport>("stage_import", { workspace_id, folder_id, file_path, sheet: sheet ?? null }),
+
+    /** Staged import, step 2: how many values won't convert to this type. */
+    checkColumn: (
+      workspace_id: string,
+      folder_id: string,
+      staging_id: string,
+      source: string,
+      kind: ColumnKind,
+      format: string | null,
+    ) => invoke<ColumnCheck>("check_import_column", { workspace_id, folder_id, staging_id, source, kind, format }),
+
+    /** Staged import, step 3: create the table. */
+    commit: (workspace_id: string, folder_id: string, staging_id: string, table_name: string, columns: ColumnSpec[]) =>
+      invoke<TableMeta>("commit_import", { workspace_id, folder_id, staging_id, table_name, columns }),
+
+    /** Throw a staged import away. */
+    discard: (workspace_id: string, folder_id: string, staging_id: string) =>
+      invoke<void>("discard_import", { workspace_id, folder_id, staging_id }),
+
     /** Resolves true if a running import was asked to stop. */
     cancelImport: () => invoke<boolean>("cancel_import"),
 
@@ -113,7 +178,37 @@ export const api = {
 const NUMERIC = /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT|DOUBLE|FLOAT|REAL|DECIMAL)/i;
 export const isNumeric = (sqlType: string) => NUMERIC.test(sqlType);
 
-export const EXCEL_EXTENSIONS = ["xlsx", "xlsm", "xlsb", "xls", "ods"];
+export const KIND_LABELS: Record<ColumnKind, string> = {
+  text: "Text",
+  integer: "Whole number",
+  number: "Number",
+  currency: "Currency (2 dp)",
+  date: "Date",
+  datetime: "Date & time",
+  boolean: "True / False",
+};
+
+/** null = ISO (2024-01-31), detected automatically */
+export const DATE_FORMATS: { value: string | null; label: string }[] = [
+  { value: null, label: "ISO  2024-01-31" },
+  { value: "%d/%m/%Y", label: "31/01/2024" },
+  { value: "%m/%d/%Y", label: "01/31/2024" },
+  { value: "%d-%m-%Y", label: "31-01-2024" },
+  { value: "%d.%m.%Y", label: "31.01.2024" },
+  { value: "%Y/%m/%d", label: "2024/01/31" },
+  { value: "%d-%b-%Y", label: "31-Jan-2024" },
+  { value: "%d %B %Y", label: "31 January 2024" },
+];
+
+export const DATETIME_FORMATS: { value: string | null; label: string }[] = [
+  { value: null, label: "ISO  2024-01-31 14:05:00" },
+  { value: "%d/%m/%Y %H:%M", label: "31/01/2024 14:05" },
+  { value: "%d/%m/%Y %H:%M:%S", label: "31/01/2024 14:05:00" },
+  { value: "%m/%d/%Y %H:%M", label: "01/31/2024 14:05" },
+  { value: "%d-%m-%Y %H:%M", label: "31-01-2024 14:05" },
+];
+
+export const EXCEL_EXTENSIONS =["xlsx", "xlsm", "xlsb", "xls", "ods"];
 export const CSV_EXTENSIONS = ["csv", "tsv", "txt"];
 export const isExcelPath = (path: string) =>
   EXCEL_EXTENSIONS.includes(path.split(".").pop()?.toLowerCase() ?? "");

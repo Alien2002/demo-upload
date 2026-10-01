@@ -9,6 +9,7 @@ mod import;
 mod names;
 mod query;
 mod query_engine;
+mod staging;
 mod workspace;
 
 pub use connections::ConnectionManager;
@@ -54,6 +55,11 @@ pub fn run() {
             commands::list_sheets,
             commands::import_file_to_folder,
             commands::cancel_import,
+            // staged import (review columns before creating the table)
+            commands::stage_import,
+            commands::check_import_column,
+            commands::commit_import,
+            commands::discard_import,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

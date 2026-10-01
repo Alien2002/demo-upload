@@ -1,8 +1,9 @@
 // src/components/ImportWizard/Step3_ImportFile.tsx
 //
-// Pick a file (native dialog: the backend needs a real path, which an HTML
-// <input type="file"> can't provide in Tauri), choose a sheet for Excel
-// files, then import with live progress and a working Cancel.
+// Pick a file (native dialog: Rust needs a real path, which an HTML
+// <input type="file"> can't provide in Tauri), choose a sheet for workbooks,
+// then read it into a staging table with live progress and a working Cancel.
+// Nothing is created in the folder yet — that happens after step 4.
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -14,7 +15,7 @@ import {
   EXCEL_EXTENSIONS,
   isExcelPath,
   type ImportProgress,
-  type TableMeta,
+  type StagedImport,
 } from "../../lib/api";
 
 type Props = {
@@ -23,10 +24,10 @@ type Props = {
   onBack: () => void;
   onClose: () => void;
   onRunningChange: (running: boolean) => void;
-  onImported: (meta: TableMeta) => void;
+  onStaged: (staged: StagedImport) => void;
 };
 
-export function Step3_ImportFile({ workspaceId, folderId, onBack, onClose, onRunningChange, onImported }: Props) {
+export function Step3_ImportFile({ workspaceId, folderId, onBack, onClose, onRunningChange, onStaged }: Props) {
   const [path, setPath] = useState<string | null>(null);
   const [sheets, setSheets] = useState<string[]>([]);
   const [sheet, setSheet] = useState<string>("");
@@ -81,19 +82,20 @@ export function Step3_ImportFile({ workspaceId, folderId, onBack, onClose, onRun
     setProgress(null);
     unlisten.current = await api.tables.onImportProgress((p) => {
       setProgress(p);
-      if (p.total > 0) setStatus(`Importing ${p.done.toLocaleString()} / ${p.total.toLocaleString()} rows…`);
-      else setStatus("Importing…");
+      if (p.total > 0 && p.done >= p.total) setStatus(`Read ${p.total.toLocaleString()} rows. Analysing columns…`);
+      else if (p.total > 0) setStatus(`Reading ${p.done.toLocaleString()} / ${p.total.toLocaleString()} rows…`);
+      else setStatus("Reading file…");
     });
 
     try {
-      const meta = await api.tables.import(workspaceId, folderId, path, sheet || undefined);
-      setStatus(`Import complete! ${meta.row_count.toLocaleString()} rows in "${meta.table}".`);
+      const staged = await api.tables.stage(workspaceId, folderId, path, sheet || undefined);
       setBusy(false);
-      onImported(meta);
+      onStaged(staged);
     } catch (err) {
       const msg = errorText(err);
-      setError(msg === "Import cancelled" ? null : msg);
-      setStatus(msg === "Import cancelled" ? "Import cancelled." : "");
+      const cancelled = msg === "Import cancelled";
+      setError(cancelled ? null : msg);
+      setStatus(cancelled ? "Cancelled." : "");
       setBusy(false);
     } finally {
       unlisten.current?.();
@@ -139,15 +141,18 @@ export function Step3_ImportFile({ workspaceId, folderId, onBack, onClose, onRun
       )}
 
       {(running || progress) && (
-        <div className="progress" aria-label="Import progress">
+        <div className="progress" aria-label="Read progress">
           <div
-            className={`progress-bar ${pct === null ? "indeterminate" : ""}`}
-            style={pct === null ? undefined : { width: `${pct}%` }}
+            className={`progress-bar ${pct === null || pct >= 100 ? "indeterminate" : ""}`}
+            style={pct === null || pct >= 100 ? undefined : { width: `${pct}%` }}
           />
         </div>
       )}
       {status && <p className="status-text">{status}</p>}
       {error && <p className="error-text">{error}</p>}
+      {!running && !error && path && (
+        <p className="muted small">Next you'll review column names and types before anything is saved.</p>
+      )}
 
       <div className="wizard-actions">
         <button onClick={onBack} disabled={running}>
@@ -157,7 +162,7 @@ export function Step3_ImportFile({ workspaceId, folderId, onBack, onClose, onRun
           Cancel
         </button>
         <button className="primary" onClick={start} disabled={!path || running}>
-          {running ? "Importing…" : "Start import"}
+          {running ? "Reading…" : "Next: review columns"}
         </button>
       </div>
     </div>
