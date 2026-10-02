@@ -11,10 +11,13 @@ export type TableState = {
   current_meta: TableMeta | null;
   /** "workspace/folder" the table list and open table belong to. */
   scope_key: string | null;
+  /** Selected grid row (where NEXT starts), null if none. */
+  selected_row: number | null;
   loading: boolean;
   error: string | null;
 
   setTables: (tables: string[]) => void;
+  setSelectedRow: (row: number | null) => void;
   refreshTables: () => Promise<void>;
   /** Open a table in the current folder (null closes it). */
   openTable: (table: string | null) => Promise<void>;
@@ -36,10 +39,13 @@ export const useTableStore = create<TableState>((set, get) => ({
   current_table: null,
   current_meta: null,
   scope_key: null,
+  selected_row: null,
   loading: false,
   error: null,
 
   setTables: (tables) => set({ tables }),
+
+  setSelectedRow: (row) => set({ selected_row: row }),
 
   refreshTables: async () => {
     const { ws, folder, key } = currentScope();
@@ -53,10 +59,12 @@ export const useTableStore = create<TableState>((set, get) => ({
       if (currentScope().key !== key) return; // selection changed meanwhile
       const { current_table, scope_key } = get();
       const keep = scope_key === key && current_table && tables.includes(current_table);
+      // Session results ("_results.r_n") aren't in the table list but stay open.
+      const isResult = current_table?.startsWith("_results.");
       set({
         tables,
         scope_key: key,
-        ...(keep ? {} : { current_table: null, current_meta: null }),
+        ...(keep || (isResult && scope_key === key) ? {} : { current_table: null, current_meta: null }),
       });
     } catch (err) {
       set({ error: errorText(err) });
@@ -81,6 +89,7 @@ export const useTableStore = create<TableState>((set, get) => ({
         current_table: table,
         current_meta: meta,
         scope_key: `${workspace_id}/${folder_id}`,
+        selected_row: null,
         error: null,
       });
     } catch (err) {

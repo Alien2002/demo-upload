@@ -100,6 +100,53 @@ export type ImportComplete = { workspace_id: string; folder_id: string; table: s
 
 export const MAX_PAGE = 5000;
 
+// ---- ACL commands
+
+export type ScalarValue = { var: string; label: string; value: string | null };
+
+export type CommandOutcome =
+  | { kind: "table"; table: string; meta: TableMeta; permanent: boolean; label: string }
+  | { kind: "scalars"; items: ScalarValue[] };
+
+export type VarInfo = { name: string; value: string; kind: string };
+
+export type CommandResponse = {
+  command: string;
+  input: string;
+  outcome: CommandOutcome;
+  sql: string;
+  duration_ms: number;
+  log_id: number;
+  variables: VarInfo[];
+};
+
+/** Error from run_command: the character range to underline. */
+export type CommandErrorInfo = { message: string; start: number; end: number };
+
+export type ResultInfo = {
+  /** "_results.r_7": open it in the grid or run the next command on it */
+  table: string;
+  label: string;
+  command: string;
+  source: string;
+  row_count: number;
+  created_at: string;
+};
+
+export type LogEntry = {
+  id: number;
+  at: string;
+  command: string;
+  input: string;
+  ok: boolean;
+  output: string;
+  row_count: number | null;
+  duration_ms: number;
+  sql: string;
+};
+
+export const isResultTable = (table: string) => table.startsWith("_results.");
+
 // ---------------------------------------------------------------- api
 
 export const api = {
@@ -118,6 +165,30 @@ export const api = {
       invoke<void>("delete_folder", { workspace_id, folder_id }),
     get: (workspace_id: string, folder_id: string) =>
       invoke<Folder>("get_folder", { workspace_id, folder_id }),
+  },
+
+  analytics: {
+    /** Run one ACL command. Rejects with CommandErrorInfo. */
+    run: (workspace_id: string, folder_id: string, table: string, text: string, current_row: number | null) =>
+      invoke<CommandResponse>("run_command", { workspace_id, folder_id, table, text, current_row }),
+
+    results: (workspace_id: string, folder_id: string) =>
+      invoke<ResultInfo[]>("list_results", { workspace_id, folder_id }),
+
+    saveResult: (workspace_id: string, folder_id: string, result: string, name: string) =>
+      invoke<TableMeta>("save_result", { workspace_id, folder_id, result, name }),
+
+    deleteResult: (workspace_id: string, folder_id: string, result: string) =>
+      invoke<void>("delete_result", { workspace_id, folder_id, result }),
+
+    history: (workspace_id: string, folder_id: string, limit = 200) =>
+      invoke<LogEntry[]>("command_history", { workspace_id, folder_id, limit }),
+
+    variables: (workspace_id: string, folder_id: string) =>
+      invoke<VarInfo[]>("get_variables", { workspace_id, folder_id }),
+
+    onTablesChanged: (cb: (p: ImportComplete) => void): Promise<UnlistenFn> =>
+      listen<ImportComplete>("tables-changed", (e) => cb(e.payload)),
   },
 
   tables: {
@@ -213,6 +284,17 @@ export const CSV_EXTENSIONS = ["csv", "tsv", "txt"];
 export const isExcelPath = (path: string) =>
   EXCEL_EXTENSIONS.includes(path.split(".").pop()?.toLowerCase() ?? "");
 
-/** Error from invoke() is usually a plain string from Rust. */
-export const errorText = (err: unknown) =>
-  typeof err === "string" ? err : err instanceof Error ? err.message : JSON.stringify(err);
+/** Error from invoke(): a string from Rust, or { message, … } from run_command. */
+export const errorText = (err: unknown): string => {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err) return String((err as { message: unknown }).message);
+  return JSON.stringify(err);
+};
+
+export const asCommandError = (err: unknown): CommandErrorInfo => {
+  if (err && typeof err === "object" && "message" in err && "start" in err && "end" in err) {
+    return err as CommandErrorInfo;
+  }
+  return { message: errorText(err), start: 0, end: 0 };
+};

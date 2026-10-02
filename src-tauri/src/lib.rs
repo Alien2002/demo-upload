@@ -2,6 +2,7 @@
 //
 // App wiring: modules, managed state, command registration, shutdown.
 
+mod analytics;
 mod commands;
 mod connections;
 mod folder;
@@ -34,6 +35,7 @@ pub fn run() {
             app.manage(ConnectionManager::new());
             app.manage(CountCache::default());
             app.manage(commands::ImportControl::default());
+            app.manage(analytics::AnalyticsState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -60,6 +62,13 @@ pub fn run() {
             commands::check_import_column,
             commands::commit_import,
             commands::discard_import,
+            // ACL commands
+            commands::run_command,
+            commands::list_results,
+            commands::save_result,
+            commands::delete_result,
+            commands::command_history,
+            commands::get_variables,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

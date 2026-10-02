@@ -5,7 +5,8 @@
 // - workspace changes -> load its folders
 // - folder changes    -> load its tables
 // - table changes     -> load that table's saved filters/sort
-// - "import-complete" -> refresh counts and table lists
+// - "import-complete" / "tables-changed" -> refresh counts and table lists
+// - folder changes    -> load its session results, clear the output panel
 // Mounted once, in Layout.
 
 import { useEffect } from "react";
@@ -14,6 +15,7 @@ import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useFolderStore } from "../stores/useFolderStore";
 import { useTableStore } from "../stores/useTableStore";
 import { tableKey, useQueryStore } from "../stores/useQueryStore";
+import { useCommandStore } from "../stores/useCommandStore";
 
 export function useNavigationSync() {
   const workspaceId = useWorkspaceStore((s) => s.current_workspace_id);
@@ -32,6 +34,8 @@ export function useNavigationSync() {
 
   useEffect(() => {
     void useTableStore.getState().refreshTables();
+    useCommandStore.getState().clearOutput();
+    void useCommandStore.getState().loadResults();
   }, [workspaceId, folderId]);
 
   useEffect(() => {
@@ -50,8 +54,18 @@ export function useNavigationSync() {
         await useTableStore.getState().refreshTables();
       }
     });
+    // Tables created by commands (TO "name") or by saving a result.
+    const unlistenTables = api.analytics.onTablesChanged(async (e) => {
+      if (useWorkspaceStore.getState().current_workspace_id === e.workspace_id) {
+        await useFolderStore.getState().loadFolders();
+      }
+      if (useFolderStore.getState().current_folder_id === e.folder_id) {
+        await useTableStore.getState().refreshTables();
+      }
+    });
     return () => {
       void unlisten.then((f) => f());
+      void unlistenTables.then((f) => f());
     };
   }, []);
 }

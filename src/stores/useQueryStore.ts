@@ -39,6 +39,9 @@ export const DEFAULT_QUERY: QuerySlice = {
 
 export const tableKey = (ws: string, folder: string, table: string) => `${ws}/${folder}/${table}`;
 
+/** Session results are recreated (and their ids reused) each session: don't remember their view. */
+const remembered = (key: string | null): key is string => !!key && !key.includes("/_results.");
+
 export const useQueryStore = create<QueryState>()(
   persist(
     (set, get) => {
@@ -46,7 +49,7 @@ export const useQueryStore = create<QueryState>()(
       const commit = (patch: Partial<QuerySlice>) => {
         const next = { ...pick(get()), ...patch };
         const key = get().table_key;
-        set({ ...next, saved: key ? { ...get().saved, [key]: next } : get().saved });
+        set({ ...next, saved: remembered(key) ? { ...get().saved, [key]: next } : get().saved });
       };
 
       return {
@@ -56,7 +59,7 @@ export const useQueryStore = create<QueryState>()(
 
         bindTable: (key) => {
           if (key === get().table_key) return;
-          const restored = key ? (get().saved[key] ?? DEFAULT_QUERY) : DEFAULT_QUERY;
+          const restored = remembered(key) ? (get().saved[key] ?? DEFAULT_QUERY) : DEFAULT_QUERY;
           set({ ...restored, table_key: key });
         },
 

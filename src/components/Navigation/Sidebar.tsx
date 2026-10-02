@@ -11,6 +11,7 @@ import { useFolderStore } from "../../stores/useFolderStore";
 import { useTableStore } from "../../stores/useTableStore";
 import { WorkspaceSelector } from "./WorkspaceSelector";
 import { TableList } from "../TableList";
+import { ResultsList } from "./ResultsList";
 import { ContextMenu } from "../common/ContextMenu";
 import { NamePrompt } from "../common/NamePrompt";
 
@@ -121,6 +122,7 @@ function FolderTables() {
         loading={loading}
         onSelect={(t) => void openTable(t)}
       />
+      <ResultsList />
     </div>
   );
 }

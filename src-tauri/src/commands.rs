@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::analytics::{self, AnalyticsState, CommandError, CommandResponse};
+use crate::analytics::executor::VarInfo;
+use crate::analytics::results::{LogEntry, ResultInfo};
 use crate::connections::ConnectionManager;
 use crate::folder::{self, Folder};
 use crate::import::{self, ImportProgress};
@@ -389,4 +392,143 @@ pub async fn discard_import(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn cancel_import(control: State<'_, ImportControl>) -> Result<bool, String> {
     Ok(control.request_cancel())
+}
+
+// ---------------------------------------------------------------- ACL commands
+
+#[derive(Serialize, Clone)]
+struct TablesChanged {
+    workspace_id: String,
+    folder_id: String,
+    table: String,
+}
+
+/// Run one ACL command against `table` ("ledger" or "_results.r_3").
+/// `current_row` is the selected record, where NEXT starts.
+/// Errors carry the character range to underline: { message, start, end }.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn run_command(
+    app: AppHandle,
+    ws: State<'_, WorkspaceStore>,
+    conns: State<'_, ConnectionManager>,
+    counts: State<'_, CountCache>,
+    analytics_state: State<'_, AnalyticsState>,
+    workspace_id: String,
+    folder_id: String,
+    table: String,
+    text: String,
+    current_row: Option<u64>,
+) -> Result<CommandResponse, CommandError> {
+    let (ws, conns, counts, st) =
+        (ws.inner().clone(), conns.inner().clone(), counts.inner().clone(), analytics_state.inner().clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = folder::existing_db_path(&ws, &workspace_id, &folder_id)?;
+        let conn = conns.get_connection(&path)?;
+        let scope = path.display().to_string();
+        let response = analytics::run_command(&conn, &st, &scope, &table, &text, current_row.unwrap_or(0))?;
+        if let analytics::executor::Outcome::Table { table: out, permanent, .. } = &response.outcome {
+            counts.invalidate(&scope);
+            if *permanent {
+                let _ = app.emit(
+                    "tables-changed",
+                    TablesChanged { workspace_id, folder_id, table: out.clone() },
+                );
+            }
+        }
+        Ok(response)
+    })
+    .await
+    .map_err(|e| CommandError::general(e.to_string()))?
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_results(
+    ws: State<'_, WorkspaceStore>,
+    conns: State<'_, ConnectionManager>,
+    analytics_state: State<'_, AnalyticsState>,
+    workspace_id: String,
+    folder_id: String,
+) -> Result<Vec<ResultInfo>, String> {
+    let (ws, conns, st) = (ws.inner().clone(), conns.inner().clone(), analytics_state.inner().clone());
+    blocking(move || {
+        let path = folder::existing_db_path(&ws, &workspace_id, &folder_id)?;
+        let conn = conns.get_connection(&path)?;
+        st.prepare(&path.display().to_string(), &conn)?;
+        analytics::results::list(&conn)
+    })
+    .await
+}
+
+/// Copy a session result into a permanent table.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn save_result(
+    app: AppHandle,
+    ws: State<'_, WorkspaceStore>,
+    conns: State<'_, ConnectionManager>,
+    workspace_id: String,
+    folder_id: String,
+    result: String,
+    name: String,
+) -> Result<TableMeta, String> {
+    let (ws, conns) = (ws.inner().clone(), conns.inner().clone());
+    blocking(move || {
+        let path = folder::existing_db_path(&ws, &workspace_id, &folder_id)?;
+        let meta = analytics::results::save_as_table(&conns.get_connection(&path)?, &result, &name)?;
+        let _ = app.emit("tables-changed", TablesChanged { workspace_id, folder_id, table: meta.table.clone() });
+        Ok(meta)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn delete_result(
+    ws: State<'_, WorkspaceStore>,
+    conns: State<'_, ConnectionManager>,
+    counts: State<'_, CountCache>,
+    workspace_id: String,
+    folder_id: String,
+    result: String,
+) -> Result<(), String> {
+    let (ws, conns, counts) = (ws.inner().clone(), conns.inner().clone(), counts.inner().clone());
+    blocking(move || {
+        let path = folder::existing_db_path(&ws, &workspace_id, &folder_id)?;
+        let r = query::TableRef::parse(&result);
+        if !r.is_result() {
+            return Err(format!("'{result}' is not a session result"));
+        }
+        analytics::results::delete(&conns.get_connection(&path)?, &r.name)?;
+        counts.invalidate(&path.display().to_string());
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn command_history(
+    ws: State<'_, WorkspaceStore>,
+    conns: State<'_, ConnectionManager>,
+    analytics_state: State<'_, AnalyticsState>,
+    workspace_id: String,
+    folder_id: String,
+    limit: Option<u64>,
+) -> Result<Vec<LogEntry>, String> {
+    let (ws, conns, st) = (ws.inner().clone(), conns.inner().clone(), analytics_state.inner().clone());
+    blocking(move || {
+        let path = folder::existing_db_path(&ws, &workspace_id, &folder_id)?;
+        let conn = conns.get_connection(&path)?;
+        st.prepare(&path.display().to_string(), &conn)?;
+        analytics::results::history(&conn, limit.unwrap_or(200))
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_variables(
+    ws: State<'_, WorkspaceStore>,
+    analytics_state: State<'_, AnalyticsState>,
+    workspace_id: String,
+    folder_id: String,
+) -> Result<Vec<VarInfo>, String> {
+    let path = folder::existing_db_path(ws.inner(), &workspace_id, &folder_id)?;
+    Ok(analytics_state.variable_list(&path.display().to_string()))
 }
